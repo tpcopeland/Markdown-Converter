@@ -8,7 +8,7 @@ Currently deployed at: https://mdtohtml.streamlit.app/
 
 md_to_html.py converts Markdown documents into multiple output formats:
 - **HTML**: Fully self-contained, offline files with embedded JavaScript libraries
-- **DOCX**: Word documents via pandoc (optional)
+- **DOCX**: Word documents via pandoc
 
 Perfect for data scientists, statisticians, and technical writers who need to create professional reports with code blocks, mathematical equations, and rich formatting.
 
@@ -20,7 +20,7 @@ All generated HTML files are completely standalone - no external dependencies, n
 
 ### Core Functionality
 - **Standalone HTML Generation** - Creates completely self-contained HTML files with all JavaScript embedded
-- **DOCX Export** - Export to Word documents via pandoc (optional dependency)
+- **DOCX Export** - Export to Word documents via pandoc
 - **mdBook Integration** - Convert multi-chapter mdBook projects into a single file
 - **Security First** - Uses DOMPurify for XSS protection and implements path traversal prevention
 - **Responsive Design** - Mobile-friendly layouts that work on all screen sizes
@@ -61,10 +61,8 @@ All generated HTML files are completely standalone - no external dependencies, n
 - Python 3.8 or higher
 - Streamlit
 - tomli (for Python < 3.11, built-in for Python >= 3.11)
-
-**Optional for DOCX export:**
-- pypandoc (Python package)
-- pandoc (system binary)
+- pypandoc (Python package for DOCX export)
+- pandoc (system binary for DOCX export)
 
 ### Setup
 
@@ -76,23 +74,7 @@ cd md_to_html
 # Install dependencies
 pip install -r requirements.txt
 
-# Vendor libraries are already included in the vendor/ directory:
-# - marked.umd.min.js (Markdown parser)
-# - purify.min.js (XSS sanitizer)
-# - highlight.min.js (Syntax highlighting)
-# - katex.min.js (Math rendering)
-# - katex.min.css (Math rendering styles)
-```
-
-### DOCX Export Setup (Optional)
-
-To enable DOCX export, install pandoc:
-
-```bash
-# Install pypandoc
-pip install pypandoc
-
-# Install pandoc
+# Install pandoc (required for DOCX export)
 # macOS:
 brew install pandoc
 
@@ -101,6 +83,13 @@ sudo apt-get install pandoc
 
 # Windows:
 choco install pandoc
+
+# Vendor libraries are already included in the vendor/ directory:
+# - marked.umd.min.js (Markdown parser)
+# - purify.min.js (XSS sanitizer)
+# - highlight.min.js (Syntax highlighting)
+# - katex.min.js (Math rendering)
+# - katex.min.css (Math rendering styles)
 ```
 
 ## Usage
