@@ -1,14 +1,18 @@
-# Markdown to HTML
+# Markdown Converter
 
-A Streamlit-based Markdown to standalone HTML converter optimized for statistical reports and technical documentation. **Now with mdBook support for multi-chapter books!**
+A Streamlit-based Markdown converter optimized for statistical reports and technical documentation. Supports export to **HTML** (standalone offline) and **DOCX** (Word document). **Now with mdBook support for multi-chapter books!**
 
 Currently deployed at: https://mdtohtml.streamlit.app/
 
 ## Overview
 
-md_to_html.py converts Markdown documents into fully self-contained, offline HTML files with embedded JavaScript libraries. Perfect for data scientists, statisticians, and technical writers who need to create professional reports with code blocks, mathematical equations, and rich formatting.
+md_to_html.py converts Markdown documents into multiple output formats:
+- **HTML**: Fully self-contained, offline files with embedded JavaScript libraries
+- **DOCX**: Word documents via pandoc (optional)
 
-**New:** Convert entire mdBook projects (with multiple chapters) into a single, offline HTML file!
+Perfect for data scientists, statisticians, and technical writers who need to create professional reports with code blocks, mathematical equations, and rich formatting.
+
+**New:** Convert entire mdBook projects (with multiple chapters) into a single, offline HTML or DOCX file!
 
 All generated HTML files are completely standalone - no external dependencies, no internet connection required to view.
 
@@ -16,7 +20,8 @@ All generated HTML files are completely standalone - no external dependencies, n
 
 ### Core Functionality
 - **Standalone HTML Generation** - Creates completely self-contained HTML files with all JavaScript embedded
-- **mdBook Integration** - Convert multi-chapter mdBook projects into a single HTML file
+- **DOCX Export** - Export to Word documents via pandoc (optional dependency)
+- **mdBook Integration** - Convert multi-chapter mdBook projects into a single file
 - **Security First** - Uses DOMPurify for XSS protection and implements path traversal prevention
 - **Responsive Design** - Mobile-friendly layouts that work on all screen sizes
 - **Dark/Light Theme Toggle** - Automatic theme switching with localStorage persistence
@@ -57,6 +62,10 @@ All generated HTML files are completely standalone - no external dependencies, n
 - Streamlit
 - tomli (for Python < 3.11, built-in for Python >= 3.11)
 
+**Optional for DOCX export:**
+- pypandoc (Python package)
+- pandoc (system binary)
+
 ### Setup
 
 ```bash
@@ -73,6 +82,25 @@ pip install -r requirements.txt
 # - highlight.min.js (Syntax highlighting)
 # - katex.min.js (Math rendering)
 # - katex.min.css (Math rendering styles)
+```
+
+### DOCX Export Setup (Optional)
+
+To enable DOCX export, install pandoc:
+
+```bash
+# Install pypandoc
+pip install pypandoc
+
+# Install pandoc
+# macOS:
+brew install pandoc
+
+# Ubuntu/Debian:
+sudo apt-get install pandoc
+
+# Windows:
+choco install pandoc
 ```
 
 ## Usage
@@ -118,10 +146,11 @@ This will open your default web browser to http://localhost:8501
    - Line Numbers: Show line numbers on left side of code blocks
    - Math/LaTeX Rendering: Enable KaTeX rendering for $...$ and $$...$$ equations
 
-3. **Build HTML**
-   - Click the "Build HTML" button
-   - Preview appears in the right panel
-   - Click "Download offline HTML" to save the file
+3. **Build and Export**
+   - Choose export format: HTML (Offline) or DOCX (Word)
+   - Click the "Build" button
+   - Preview appears in the right panel (HTML only)
+   - Click "Download offline HTML" or "Download DOCX" to save the file
 
 ### mdBook Project Workflow
 
@@ -154,11 +183,12 @@ This will open your default web browser to http://localhost:8501
    - Same configuration options as single file mode
    - All features (syntax highlighting, math, themes, etc.) work with mdBook projects
 
-5. **Build HTML**
-   - Click "Build HTML" to generate the combined document
-   - All chapters will be merged into a single HTML file
+5. **Build and Export**
+   - Choose export format: HTML (Offline) or DOCX (Word)
+   - Click "Build" to generate the combined document
+   - All chapters will be merged into a single file
    - Table of contents will reflect the book structure
-   - Download the standalone HTML file
+   - Download the standalone HTML or DOCX file
 
 ### mdBook SUMMARY.md Format
 
