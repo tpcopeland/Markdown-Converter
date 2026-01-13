@@ -58,7 +58,6 @@ sys.modules['streamlit.components.v1'] = MagicMock()
 
 from md_converter import (
     validate_vendor_path,
-    escape_js_string,
     escape_for_script_tag,
     escape_html,
     safe_read_file,
@@ -138,37 +137,6 @@ class TestValidateVendorPathSymlink:
             assert result == os.path.realpath(legit_file)
 
 
-class TestJSBacktickEscaping:
-    """Test JavaScript template literal (backtick) escaping.
-
-    Modern JS uses backticks for template literals: `Hello ${name}`
-    If backticks are not escaped, an attacker could break out of a string
-    and inject code via ${...} expressions.
-    """
-
-    def test_backtick_in_js_string(self):
-        """Test that backticks are handled in JS strings."""
-        # If content contains backticks and we use them in template literals
-        content = "Hello `${alert(1)}` world"
-        result = escape_js_string(content)
-
-        # The escaped string should not allow template injection
-        # Note: escape_js_string is for regular strings, not template literals
-        # But if the output is used in a template literal context, backticks matter
-        assert result is not None
-        # Currently backticks are NOT escaped - documenting this
-        # This is only a risk if the escaped string is used in template literals
-
-    def test_backtick_with_dollar_brace(self):
-        """Test ${} pattern in JS strings."""
-        content = "test ${document.cookie} end"
-        result = escape_js_string(content)
-
-        # If this is used in a template literal, it would execute
-        # escape_js_string should probably escape $ or { to be safe
-        assert result is not None
-
-
 class TestScriptTagControlCharacters:
     """Test script tag escaping with various control characters."""
 
@@ -231,46 +199,6 @@ class TestScriptTagControlCharacters:
             result = escape_for_script_tag(content)
             # At minimum, shouldn't crash
             assert result is not None
-
-
-class TestEscapeJsStringEdgeCases:
-    """Test edge cases in escape_js_string."""
-
-    def test_all_escape_sequences(self):
-        """Test all characters that should be escaped."""
-        # Build a string with all special chars
-        special = '\\"\'\\n\\r\\t\u2028\u2029</script>'
-        content = f"prefix{special}suffix"
-        result = escape_js_string(content)
-
-        # None of these should appear unescaped
-        assert '\n' not in result or '\\n' in result
-        assert '\r' not in result or '\\r' in result
-        assert '\t' not in result or '\\t' in result
-        assert '\u2028' not in result
-        assert '\u2029' not in result
-
-    def test_null_character(self):
-        """Test null character in JS strings."""
-        content = "before\x00after"
-        result = escape_js_string(content)
-        # Should not crash
-        assert result is not None
-
-    def test_high_unicode(self):
-        """Test high Unicode codepoints (surrogate pairs)."""
-        # Emoji and other 4-byte UTF-8 characters
-        content = "Hello 🎉 World 𝕳𝖊𝖑𝖑𝖔"
-        result = escape_js_string(content)
-        assert result is not None
-        # Should preserve the characters (they're valid in JS strings)
-
-    def test_combining_characters(self):
-        """Test combining Unicode characters."""
-        # Combining diacritics that modify previous character
-        content = "e\u0301"  # é as e + combining acute accent
-        result = escape_js_string(content)
-        assert result is not None
 
 
 class TestBuildHtmlXSS:

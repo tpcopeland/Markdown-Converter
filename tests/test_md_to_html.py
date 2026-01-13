@@ -78,37 +78,23 @@ class TestEscapeHtml(unittest.TestCase):
         self.assertEqual(md_converter.escape_html(input_str), expected)
 
 
-class TestEscapeJsString(unittest.TestCase):
-    """Test JavaScript string escaping function."""
-
-    def test_escape_js_string_basic(self):
-        """Test basic JS escaping."""
-        self.assertEqual(md_converter.escape_js_string("test's"), "test\\'s")
-        self.assertEqual(md_converter.escape_js_string('test"s'), 'test\\"s')
-        self.assertEqual(md_converter.escape_js_string("line\nbreak"), "line\\nbreak")
-
-    def test_escape_js_string_script_tag(self):
-        """Test script tag escaping."""
-        self.assertEqual(md_converter.escape_js_string("</script>"), "<\\/script>")
-
-    def test_escape_js_string_empty(self):
-        """Test empty string handling."""
-        self.assertEqual(md_converter.escape_js_string(""), "")
-        self.assertEqual(md_converter.escape_js_string(None), "")
-
-
 class TestEscapeForScriptTag(unittest.TestCase):
     """Test script tag content escaping."""
 
     def test_escape_script_tag_closing(self):
         """Test closing script tag escaping."""
+        # Standard closing tag
         self.assertEqual(md_converter.escape_for_script_tag("</script>"), "<\\/script>")
-        # Case-insensitive replacement - all variants become lowercase escaped
-        # This is safe because the browser won't close the tag regardless of case
+
+        # Case-insensitive replacement - preserves original case
         result_upper = md_converter.escape_for_script_tag("</SCRIPT>")
-        self.assertIn("<\\/", result_upper)
+        self.assertEqual(result_upper, "<\\/SCRIPT>")
+
         result_mixed = md_converter.escape_for_script_tag("</Script>")
-        self.assertIn("<\\/", result_mixed)
+        self.assertEqual(result_mixed, "<\\/Script>")
+
+        # Broken/Incomplete tags that might still be dangerous
+        self.assertEqual(md_converter.escape_for_script_tag("</script/foo>"), "<\\/script/foo>")
 
     def test_escape_script_tag_empty(self):
         """Test empty string handling."""
@@ -944,28 +930,6 @@ class TestTabIndentation(unittest.TestCase):
             self.assertEqual(levels, [0, 1, 2])
         finally:
             os.unlink(temp_path)
-
-
-class TestUnicodeEscaping(unittest.TestCase):
-    """Test Unicode line separator escaping."""
-
-    def test_escape_line_separator(self):
-        """Test U+2028 LINE SEPARATOR is escaped."""
-        result = md_converter.escape_js_string("test\u2028line")
-        self.assertIn("\\u2028", result)
-        self.assertNotIn("\u2028", result)
-
-    def test_escape_paragraph_separator(self):
-        """Test U+2029 PARAGRAPH SEPARATOR is escaped."""
-        result = md_converter.escape_js_string("test\u2029para")
-        self.assertIn("\\u2029", result)
-        self.assertNotIn("\u2029", result)
-
-    def test_escape_combined(self):
-        """Test both separators together."""
-        result = md_converter.escape_js_string("a\u2028b\u2029c")
-        self.assertIn("\\u2028", result)
-        self.assertIn("\\u2029", result)
 
 
 class TestByteCountTruncation(unittest.TestCase):

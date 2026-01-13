@@ -67,7 +67,6 @@ from md_converter import (
     safe_read_file,
     sanitize_filename,
     escape_for_script_tag,
-    escape_js_string,
     escape_html,
     validate_css_size,
     validate_project_path,
@@ -453,15 +452,6 @@ class TestScriptTagVariations:
 
 class TestCRLFInjection:
     """Test CRLF injection in various contexts."""
-
-    def test_crlf_in_js_string(self):
-        """Test CRLF doesn't break JS strings."""
-        content = "line1\r\nline2\rline3\nline4"
-        result = escape_js_string(content)
-
-        # All newlines should be escaped
-        assert "\r" not in result or "\\r" in result
-        assert "\n" not in result or "\\n" in result
 
     def test_crlf_in_html_comment(self):
         """Test CRLF in HTML comments."""

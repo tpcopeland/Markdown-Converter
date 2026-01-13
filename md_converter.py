@@ -80,6 +80,19 @@ KATEX_CSS_FILE = "katex.min.css"
 MAX_MARKDOWN_SIZE = 50 * 1024 * 1024  # 50 MB
 MAX_VENDOR_JS_SIZE = 10 * 1024 * 1024  # 10 MB
 
+# Filename and sheet name limits
+MAX_FILENAME_BYTES = 255  # Most filesystems limit to 255 bytes
+MAX_EXCEL_SHEET_NAME = 31  # Excel sheet names limited to 31 characters
+
+# Supported document fonts (shared between DOCX and PDF export)
+DOCUMENT_FONTS = {
+    "Times New Roman": "Times New Roman",
+    "Calibri": "Calibri",
+    "Arial": "Arial",
+    "Georgia": "Georgia",
+    "Cambria": "Cambria",
+}
+
 # ---------- Helpers ----------
 @st.cache_data
 def read_text_file(path: str, max_size: int = MAX_VENDOR_JS_SIZE) -> str:
@@ -175,32 +188,23 @@ def escape_html(s: str) -> str:
              .replace('"', "&quot;")
              .replace("'", "&#x27;"))
 
-def escape_js_string(s: str) -> str:
-    """Escape string for safe inclusion in a JavaScript variable."""
-    if not s:
-        return ""
-    return (s.replace("\\", "\\\\")
-             .replace("'", "\\'")
-             .replace('"', '\\"')
-             .replace("\n", "\\n")
-             .replace("\r", "\\r")
-             .replace("\t", "\\t")
-             # Escape Unicode line terminators (valid in JSON but break JS strings)
-             .replace("\u2028", "\\u2028")
-             .replace("\u2029", "\\u2029")
-             .replace("</script>", "<\\/script>"))
-
 def escape_for_script_tag(s: str) -> str:
-    """Escape string for safe inclusion in a <script> data block."""
+    """Escape string for safe inclusion in a <script> data block.
+
+    Prevents premature script tag closure by escaping </script sequences
+    and HTML comments that could break out of the script context.
+    """
     if not s:
         return ""
-    # Escape </script> case-insensitively to prevent HTML parser from closing the tag
-    # HTML parsers are case-insensitive, so </SCRIPT>, </Script>, etc. would all close the tag
-    # Also handle whitespace variants like </script >, </script\t>, </script\n>
-    # which some HTML parsers may accept as valid closing tags
-    s = re.sub(r'</script\s*>', r'<\\/script>', s, flags=re.IGNORECASE)
+    # Escape </script case-insensitively to prevent HTML parser from closing the tag
+    # We replace </script with <\/script which breaks the tag pattern
+    # Also handle whitespace variants like </script > and </script\t>
+    s = re.sub(r'</(script)', r'<\\/\1', s, flags=re.IGNORECASE)
     # Also escape HTML comment sequences which could break script context
     s = s.replace('<!--', '<\\!--')
+    # Escape Unicode line separators (U+2028, U+2029) which can break JS strings
+    s = s.replace('\u2028', '\\u2028')
+    s = s.replace('\u2029', '\\u2029')
     return s
 
 def validate_date(date_str: str) -> bool:
@@ -244,8 +248,12 @@ def sanitize_filename(name: str) -> str:
     # Use case-insensitive check for .html extension to avoid double extensions
     base = name[:-5] if name.lower().endswith('.html') else name
     # Truncate by BYTE count, not character count (for Unicode safety)
-    # Most filesystems have 255 byte limit, so use 250 bytes for base + 5 for .html
-    while len(base.encode('utf-8')) > 250:
+    # Most filesystems have 255 byte limit, so use (MAX_FILENAME_BYTES - 5) bytes for base + 5 for .html
+    max_base_bytes = MAX_FILENAME_BYTES - 5  # Leave room for .html extension
+    # Optimization: slice to max chars first (since 1 char >= 1 byte)
+    if len(base) > max_base_bytes:
+        base = base[:max_base_bytes]
+    while len(base.encode('utf-8')) > max_base_bytes:
         base = base[:-1]
     return base + '.html'
 
@@ -309,8 +317,11 @@ def sanitize_filename_for_format(name: str, extension: str) -> str:
             name = name[:-len(ext)]
             break
 
-    # Truncate by byte count for Unicode safety (255 - extension length)
-    max_base_bytes = 255 - len(extension.encode('utf-8'))
+    # Truncate by byte count for Unicode safety (MAX_FILENAME_BYTES - extension length)
+    max_base_bytes = MAX_FILENAME_BYTES - len(extension.encode('utf-8'))
+    # Optimization: slice to max chars first
+    if len(name) > max_base_bytes:
+        name = name[:max_base_bytes]
     while len(name.encode('utf-8')) > max_base_bytes:
         name = name[:-1]
 
@@ -573,10 +584,35 @@ def validate_project_path(project_path: str) -> Tuple[bool, str]:
         return False, "Invalid path."
 
     # Check if the resolved path points to sensitive system directories
-    sensitive_dirs = ['/etc', '/var', '/root', '/home/root', '/sys', '/proc', '/dev', '/boot']
+    # This list covers common Unix/Linux sensitive locations
+    sensitive_dirs = [
+        '/etc',           # System configuration
+        '/var',           # Variable data (logs, etc.)
+        '/root',          # Root user home
+        '/home/root',     # Alternative root home
+        '/sys',           # Kernel/system info
+        '/proc',          # Process information
+        '/dev',           # Device files
+        '/boot',          # Boot files
+        '/usr/sbin',      # System binaries
+        '/sbin',          # Essential system binaries
+        '/tmp',           # Temp files (potential symlink attacks)
+        '/run',           # Runtime data
+        '/lib',           # System libraries
+        '/lib64',         # 64-bit system libraries
+    ]
+
+    # Also check for sensitive files in user home directories
+    home_sensitive_patterns = ['.ssh', '.gnupg', '.aws', '.config/gcloud', '.kube']
+
     for sensitive in sensitive_dirs:
         if real_path == sensitive or real_path.startswith(sensitive + os.sep):
             return False, f"Access to system directory '{sensitive}' is not allowed."
+
+    # Check for sensitive patterns in home directories
+    for pattern in home_sensitive_patterns:
+        if f'/{pattern}/' in real_path or real_path.endswith(f'/{pattern}'):
+            return False, f"Access to sensitive directory '{pattern}' is not allowed."
 
     return True, ""
 
@@ -660,7 +696,7 @@ def _preprocess_markdown_for_docx(content: str) -> str:
     return '\n'.join(result)
 
 
-def _postprocess_docx(docx_bytes: bytes, font_name: str = "Calibri", font_size: str = "11") -> bytes:
+def _postprocess_docx(docx_bytes: bytes, font_name: str = "Times New Roman", font_size: str = "12") -> bytes:
     """
     Post-process DOCX to fix pandoc's default styling.
 
@@ -671,11 +707,19 @@ def _postprocess_docx(docx_bytes: bytes, font_name: str = "Calibri", font_size: 
 
     Modifies:
     - word/styles.xml: Style definitions (header colors, fonts)
-    - word/document.xml: Actual document content (inline colors)
+    - word/document.xml: Actual document content (inline colors, page size)
     - word/theme/theme1.xml: Theme definitions (font defaults)
     """
+    # Validate and sanitize font_size to prevent crashes
+    try:
+        font_size_int = int(font_size)
+        if font_size_int < 6 or font_size_int > 72:
+            font_size_int = 12  # Default to 12pt for out-of-range values
+    except (ValueError, TypeError):
+        font_size_int = 12  # Default to 12pt for invalid values
+
     # Convert font size to half-points (Word uses half-points internally)
-    font_size_half_pts = str(int(font_size) * 2)
+    font_size_half_pts = str(font_size_int * 2)
 
     with zipfile.ZipFile(io.BytesIO(docx_bytes), 'r') as zin:
         output_buffer = io.BytesIO()
@@ -706,6 +750,29 @@ def _postprocess_docx(docx_bytes: bytes, font_name: str = "Calibri", font_size: 
                     # Remove inline color styling
                     content = re.sub(r'<w:color\s+w:val="[0-9A-Fa-f]{6}"\s*/>', '', content)
                     content = re.sub(r'<w:color[^>]*w:themeColor="[^"]*"[^>]*/>', '', content)
+
+                    # Set A4 page size (210mm x 297mm = 11906 x 16838 twips)
+                    # with 1 inch margins (1440 twips)
+                    a4_page_settings = (
+                        '<w:pgSz w:w="11906" w:h="16838"/>'
+                        '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" '
+                        'w:header="720" w:footer="720" w:gutter="0"/>'
+                    )
+                    # Replace existing page size settings or add them
+                    if '<w:pgSz' in content:
+                        content = re.sub(r'<w:pgSz[^/]*/>', '<w:pgSz w:w="11906" w:h="16838"/>', content)
+                    if '<w:pgMar' in content:
+                        content = re.sub(
+                            r'<w:pgMar[^/]*/>',
+                            '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" '
+                            'w:header="720" w:footer="720" w:gutter="0"/>',
+                            content
+                        )
+                    # If no sectPr exists, add one before closing body tag
+                    elif '</w:body>' in content and '<w:sectPr' not in content:
+                        sect_pr = f'<w:sectPr>{a4_page_settings}</w:sectPr>'
+                        content = content.replace('</w:body>', f'{sect_pr}</w:body>')
+
                     data = content.encode('utf-8')
 
                 elif item.filename == 'word/theme/theme1.xml':
@@ -745,8 +812,8 @@ def convert_markdown_to_docx(
     markdown_content: str,
     output_path: Optional[str] = None,
     extra_args: Optional[list] = None,
-    font_name: str = "Calibri",
-    font_size: str = "11"
+    font_name: str = "Times New Roman",
+    font_size: str = "12"
 ) -> bytes:
     """
     Convert Markdown content to DOCX format.
@@ -755,8 +822,8 @@ def convert_markdown_to_docx(
         markdown_content: The markdown text to convert
         output_path: Optional path to write the DOCX file
         extra_args: Optional list of extra pandoc arguments
-        font_name: Font family name (e.g., "Calibri", "Times New Roman")
-        font_size: Font size in points (e.g., "11", "12")
+        font_name: Font family name (default: "Times New Roman")
+        font_size: Font size in points (default: "12")
 
     Returns:
         The DOCX file content as bytes
@@ -809,6 +876,251 @@ def convert_markdown_to_docx(
                 f.write(docx_bytes)
 
         return docx_bytes
+
+
+# ---------- PDF Conversion ----------
+
+def check_pdf_dependencies() -> Tuple[bool, str]:
+    """
+    Check if PDF conversion dependencies are available.
+
+    PDF conversion requires:
+    - pypandoc
+    - pandoc binary
+    - A PDF engine (preferred order): xelatex, lualatex, pdflatex, weasyprint, wkhtmltopdf
+
+    Returns:
+        Tuple of (is_available, error_message)
+    """
+    if not HAS_PYPANDOC:
+        return False, "pypandoc is not installed. Install with: pip install pypandoc"
+
+    import shutil
+    if shutil.which("pandoc") is None:
+        return False, (
+            "pandoc is not found on the system. Install with:\n"
+            "  - macOS: brew install pandoc\n"
+            "  - Ubuntu/Debian: apt-get install pandoc\n"
+            "  - Windows: choco install pandoc"
+        )
+
+    # Check for PDF engines (in order of preference)
+    # LaTeX engines are preferred for professional document output
+    pdf_engine = _get_pdf_engine()
+
+    if pdf_engine is None:
+        return False, (
+            "No PDF engine found. Install one of (recommended first):\n"
+            "  - LaTeX (best quality): apt-get install texlive-xetex texlive-fonts-recommended\n"
+            "  - WeasyPrint: pip install weasyprint\n"
+            "  - wkhtmltopdf (deprecated): apt-get install wkhtmltopdf"
+        )
+
+    return True, ""
+
+
+def _get_pdf_engine() -> Optional[str]:
+    """
+    Get the best available PDF engine.
+
+    Priority order:
+    1. xelatex - Best for system fonts (Times New Roman), Unicode support
+    2. lualatex - Similar to xelatex, good font support
+    3. pdflatex - Good but limited font support
+    4. weasyprint - Modern CSS-based, actively maintained
+    5. wkhtmltopdf - Deprecated but still works
+    """
+    import shutil
+
+    # LaTeX engines (preferred - best quality output)
+    if shutil.which("xelatex"):
+        return "xelatex"
+    if shutil.which("lualatex"):
+        return "lualatex"
+    if shutil.which("pdflatex"):
+        return "pdflatex"
+
+    # CSS-based engines (fallback)
+    if shutil.which("weasyprint"):
+        return "weasyprint"
+    if shutil.which("wkhtmltopdf"):
+        return "wkhtmltopdf"
+
+    return None
+
+
+def convert_markdown_to_pdf(
+    markdown_content: str,
+    output_path: Optional[str] = None,
+    font_name: str = "Times New Roman",
+    font_size: str = "12",
+    include_toc: bool = True,
+    toc_depth: int = 2,
+    highlight_style: str = "pygments"
+) -> bytes:
+    """
+    Convert Markdown content to PDF format.
+
+    Uses pandoc with the best available PDF engine:
+    - xelatex/lualatex: Best quality, supports system fonts like Times New Roman
+    - pdflatex: Good quality, limited font support
+    - weasyprint: CSS-based, modern
+    - wkhtmltopdf: Deprecated fallback
+
+    Output is A4 page size with configurable fonts.
+
+    Args:
+        markdown_content: The markdown text to convert
+        output_path: Optional path to write the PDF file
+        font_name: Font family name (default: "Times New Roman")
+        font_size: Font size in points (default: "12")
+        include_toc: Whether to include table of contents
+        toc_depth: Depth of ToC (1-3)
+        highlight_style: Code highlighting style
+
+    Returns:
+        The PDF file content as bytes
+
+    Raises:
+        ImportError: If dependencies are not installed
+        RuntimeError: If conversion fails
+    """
+    available, error = check_pdf_dependencies()
+    if not available:
+        raise ImportError(error)
+
+    # Validate and sanitize font_size to prevent crashes
+    try:
+        font_size_int = int(font_size)
+        if font_size_int < 6 or font_size_int > 72:
+            font_size_int = 12  # Default to 12pt for out-of-range values
+    except (ValueError, TypeError):
+        font_size_int = 12  # Default to 12pt for invalid values
+    font_size = str(font_size_int)  # Reassign to sanitized value
+
+    pdf_engine = _get_pdf_engine()
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        temp_input = os.path.join(tmpdir, "input.md")
+        temp_output = os.path.join(tmpdir, "output.pdf")
+
+        # Preprocess markdown (same as DOCX)
+        content = _preprocess_markdown_for_docx(markdown_content)
+
+        with open(temp_input, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        # Build pandoc arguments
+        extra_args = [
+            "--standalone",
+            f"--pdf-engine={pdf_engine}",
+            f"--highlight-style={highlight_style}",
+        ]
+
+        if include_toc:
+            extra_args.append("--toc")
+            extra_args.append(f"--toc-depth={toc_depth}")
+
+        # Engine-specific options for A4 and fonts
+        if pdf_engine in ("xelatex", "lualatex"):
+            # XeLaTeX/LuaLaTeX: Best option - supports system fonts directly
+            extra_args.extend([
+                "-V", "papersize=a4",
+                "-V", f"fontsize={font_size}pt",
+                "-V", "geometry:margin=1in",
+                "-V", f"mainfont={font_name}",
+                "-V", "monofont=DejaVu Sans Mono",
+            ])
+        elif pdf_engine == "pdflatex":
+            # pdflatex: Good but can't use system fonts directly
+            # Uses LaTeX font packages instead
+            extra_args.extend([
+                "-V", "papersize=a4",
+                "-V", f"fontsize={font_size}pt",
+                "-V", "geometry:margin=1in",
+            ])
+            # Use mathptmx for Times-like font in pdflatex
+            if "times" in font_name.lower():
+                extra_args.extend(["-V", "fontfamily=mathptmx"])
+        elif pdf_engine == "weasyprint":
+            # WeasyPrint: CSS-based, modern alternative
+            css_content = f"""
+@page {{
+    size: A4;
+    margin: 25mm;
+}}
+body {{
+    font-family: "{font_name}", "Times New Roman", serif;
+    font-size: {font_size}pt;
+    line-height: 1.6;
+}}
+h1, h2, h3, h4, h5, h6 {{
+    font-family: "{font_name}", "Times New Roman", serif;
+}}
+code, pre {{
+    font-family: "DejaVu Sans Mono", "Courier New", monospace;
+    font-size: {int(font_size) - 1}pt;
+}}
+"""
+            css_file = os.path.join(tmpdir, "style.css")
+            with open(css_file, "w") as f:
+                f.write(css_content)
+            extra_args.append(f"--css={css_file}")
+        elif pdf_engine == "wkhtmltopdf":
+            # wkhtmltopdf: Deprecated but still functional
+            extra_args.extend([
+                "--pdf-engine-opt=--page-size", "--pdf-engine-opt=A4",
+                "--pdf-engine-opt=--margin-top", "--pdf-engine-opt=20mm",
+                "--pdf-engine-opt=--margin-bottom", "--pdf-engine-opt=20mm",
+                "--pdf-engine-opt=--margin-left", "--pdf-engine-opt=25mm",
+                "--pdf-engine-opt=--margin-right", "--pdf-engine-opt=25mm",
+            ])
+            css_content = f"""
+body {{
+    font-family: "{font_name}", "Times New Roman", serif;
+    font-size: {font_size}pt;
+    line-height: 1.5;
+}}
+h1, h2, h3, h4, h5, h6 {{
+    font-family: "{font_name}", "Times New Roman", serif;
+}}
+code, pre {{
+    font-family: "Courier New", monospace;
+    font-size: {int(font_size) - 1}pt;
+}}
+"""
+            css_file = os.path.join(tmpdir, "style.css")
+            with open(css_file, "w") as f:
+                f.write(css_content)
+            extra_args.append(f"--css={css_file}")
+
+        try:
+            pypandoc.convert_file(
+                temp_input,
+                "pdf",
+                outputfile=temp_output,
+                extra_args=extra_args
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"PDF conversion failed: {e}\n"
+                f"Engine: {pdf_engine}\n"
+                "Check that the input is valid markdown and required fonts are installed."
+            ) from e
+
+        # Read the generated PDF
+        if not os.path.exists(temp_output):
+            raise RuntimeError("PDF file was not generated.")
+
+        with open(temp_output, "rb") as f:
+            pdf_bytes = f.read()
+
+        # Write to output path if specified
+        if output_path:
+            with open(output_path, "wb") as f:
+                f.write(pdf_bytes)
+
+        return pdf_bytes
 
 
 # ---------- XLSX Conversion ----------
@@ -981,6 +1293,43 @@ def _get_relevance_fill(relevance: str):
     return None
 
 
+def sanitize_excel_sheet_name(name: str, default: str = "Sheet1") -> str:
+    """
+    Sanitize a string for use as an Excel sheet name.
+
+    Excel sheet names have specific restrictions:
+    - Maximum 31 characters
+    - Cannot contain: \\ / ? * [ ] :
+    - Cannot be empty
+    - Cannot start or end with apostrophe
+
+    Args:
+        name: The proposed sheet name
+        default: Default name if sanitization results in empty string
+
+    Returns:
+        A valid Excel sheet name
+    """
+    if not name or not name.strip():
+        return default
+
+    # Remove invalid characters
+    invalid_chars = r'[\\/\?\*\[\]:]'
+    name = re.sub(invalid_chars, '_', name)
+
+    # Strip leading/trailing whitespace and apostrophes
+    name = name.strip().strip("'")
+
+    # Truncate to max length
+    name = name[:MAX_EXCEL_SHEET_NAME]
+
+    # If empty after sanitization, use default
+    if not name:
+        return default
+
+    return name
+
+
 def convert_markdown_to_xlsx(
     markdown_content: str,
     output_path: Optional[str] = None,
@@ -1025,7 +1374,7 @@ def convert_markdown_to_xlsx(
     # Create workbook
     wb = Workbook()
     ws = wb.active
-    ws.title = sheet_name[:31]  # Excel sheet names limited to 31 chars
+    ws.title = sanitize_excel_sheet_name(sheet_name)  # Sanitize and truncate sheet name
 
     # Define styles
     header_fill = PatternFill(start_color=XLSX_COLORS["header_bg"],
@@ -1650,10 +1999,8 @@ def generate_javascript(
             fragments.push(document.createTextNode(text.slice(lastIdx)));
           }
 
-          if (fragments.length > 0){
-            var parent = node.parentNode;
-            fragments.forEach(function(frag){ parent.insertBefore(frag, node); });
-            parent.removeChild(node);
+          if (lastIdx > 0){
+            node.replaceWith(...fragments);
           }
         }
       }
@@ -1983,7 +2330,7 @@ def build_html(
 # ---------- Streamlit UI ----------
 st.set_page_config(page_title=APP_TITLE, layout="wide")
 st.title(APP_TITLE)
-st.caption("Convert Markdown to HTML, DOCX, or XLSX. Features: syntax highlighting, math rendering, multiple themes, ToC, collapsible sections. XLSX exports tables to formatted Excel spreadsheets. Supports mdBook projects!")
+st.caption("Convert Markdown to DOCX, PDF, HTML, or XLSX. Features: A4 page size, Times New Roman default, syntax highlighting, ToC, and more. Supports mdBook projects!")
 
 # Mode selection
 mode = st.radio(
@@ -2004,11 +2351,17 @@ with st.container(border=True):
     if mode == "Single Markdown File":
         uploaded = st.file_uploader("Upload a .md file", type=["md", "markdown"])
         if uploaded is not None:
-            try:
-                md_text = uploaded.read().decode("utf-8")
-                uploaded_filename = uploaded.name
-            except Exception as e:
-                st.error(f"Failed to read file: {e}")
+            # Check file size before reading to prevent memory exhaustion
+            if uploaded.size > MAX_MARKDOWN_SIZE:
+                st.error(f"File too large: {uploaded.size / (1024*1024):.1f} MB. Maximum allowed: {MAX_MARKDOWN_SIZE / (1024*1024):.0f} MB")
+            else:
+                try:
+                    md_text = uploaded.read().decode("utf-8")
+                    uploaded_filename = uploaded.name
+                except UnicodeDecodeError:
+                    st.error("File is not valid UTF-8 text. Please ensure the file is properly encoded.")
+                except Exception as e:
+                    st.error(f"Failed to read file: {e}")
         md_text = st.text_area("Or paste Markdown", value=md_text, height=260, placeholder="# Title\n\n...")
 
     else:  # mdBook Project mode
@@ -2038,6 +2391,7 @@ st.divider()
 
 # Check dependencies
 docx_available, docx_error = check_docx_dependencies()
+pdf_available, pdf_error = check_pdf_dependencies()
 xlsx_available, xlsx_error = check_xlsx_dependencies()
 
 # Export format selection
@@ -2048,13 +2402,16 @@ with st.container(border=True):
     with format_col1:
         export_format = st.radio(
             "Choose format",
-            ["HTML (Offline)", "DOCX (Word)", "XLSX (Excel)"],
+            ["DOCX (Word)", "PDF", "HTML (Offline)", "XLSX (Excel)"],
             horizontal=True,
-            help="HTML: standalone offline file with interactive features. DOCX: Word document. XLSX: Excel spreadsheet from tables."
+            help="DOCX: Word document. PDF: via DOCX conversion. HTML: standalone offline file. XLSX: Excel from tables."
         )
 
     if export_format == "DOCX (Word)" and not docx_available:
         st.error(f"DOCX export unavailable: {docx_error}")
+
+    if export_format == "PDF" and not pdf_available:
+        st.error(f"PDF export unavailable: {pdf_error}")
 
     if export_format == "XLSX (Excel)" and not xlsx_available:
         st.error(f"XLSX export unavailable: {xlsx_error}")
@@ -2145,8 +2502,8 @@ with st.container(border=True):
         base_font_size_value = font_size_map.get(base_font_size, "100%")
         content_width_value = content_width_map.get(content_width, "900px")
 
-    elif export_format == "DOCX (Word)":
-        # ----- DOCX OPTIONS -----
+    elif export_format in ("DOCX (Word)", "PDF"):
+        # ----- DOCX/PDF OPTIONS -----
         st.markdown("**Document Settings**")
         col1, col2 = st.columns([1, 1], gap="medium")
         with col1:
@@ -2173,7 +2530,7 @@ with st.container(border=True):
         with col1:
             docx_font = st.selectbox(
                 "Body Font",
-                ["Default (Calibri)", "Times New Roman", "Arial", "Georgia", "Cambria"],
+                ["Times New Roman", "Calibri", "Arial", "Georgia", "Cambria"],
                 index=0,
                 help="Main document font (requires font installed on system)"
             )
@@ -2181,7 +2538,7 @@ with st.container(border=True):
             docx_font_size = st.selectbox(
                 "Font Size",
                 ["10pt", "11pt", "12pt", "14pt"],
-                index=1,
+                index=2,
                 help="Base font size for body text"
             )
 
@@ -2208,8 +2565,8 @@ with st.container(border=True):
             xlsx_sheet_name = st.text_input(
                 "Sheet Name",
                 value="Data",
-                max_chars=31,
-                help="Name for the Excel worksheet (max 31 characters)"
+                max_chars=MAX_EXCEL_SHEET_NAME,
+                help=f"Name for the Excel worksheet (max {MAX_EXCEL_SHEET_NAME} characters)"
             )
             xlsx_auto_filter = st.toggle("Add auto-filter dropdowns", value=True, help="Add dropdown filters to header row")
         with col2:
@@ -2257,6 +2614,8 @@ with build_col:
             st.warning("Provide Markdown via upload, paste, or mdBook project path.")
         elif export_format == "DOCX (Word)" and not docx_available:
             st.error(f"DOCX export unavailable: {docx_error}")
+        elif export_format == "PDF" and not pdf_available:
+            st.error(f"PDF export unavailable: {pdf_error}")
         elif export_format == "XLSX (Excel)" and not xlsx_available:
             st.error(f"XLSX export unavailable: {xlsx_error}")
         else:
@@ -2295,7 +2654,9 @@ with build_col:
                     if mode == "mdBook Project":
                         default_name = sanitize_filename(final_title)
                     elif uploaded_filename:
-                        default_name = uploaded_filename.rsplit('.', 1)[0] + '.html'
+                        # Extract base name and sanitize properly
+                        base_name = uploaded_filename.rsplit('.', 1)[0]
+                        default_name = sanitize_filename_for_format(base_name, '.html')
                     else:
                         default_name = sanitize_filename(final_title)
 
@@ -2304,6 +2665,7 @@ with build_col:
                     st.session_state["generated_name"] = default_name
                     st.session_state["last_html"] = html
                     st.session_state["generated_docx"] = None
+                    st.session_state["generated_pdf"] = None
                     st.session_state["generated_xlsx"] = None
                     st.success("HTML built successfully!")
 
@@ -2316,15 +2678,8 @@ with build_col:
                         toc_depth_val = {"1 level": 1, "2 levels": 2, "3 levels": 3}.get(docx_toc_depth, 2)
                         extra_args.append(f"--toc-depth={toc_depth_val}")
 
-                    # Font settings via variables
-                    font_map = {
-                        "Default (Calibri)": "Calibri",
-                        "Times New Roman": "Times New Roman",
-                        "Arial": "Arial",
-                        "Georgia": "Georgia",
-                        "Cambria": "Cambria"
-                    }
-                    font_name = font_map.get(docx_font, "Calibri")
+                    # Font settings
+                    font_name = DOCUMENT_FONTS.get(docx_font, "Times New Roman")
                     font_size_val = docx_font_size.replace("pt", "")
 
                     # Pass options to converter
@@ -2339,7 +2694,8 @@ with build_col:
                     if mode == "mdBook Project":
                         default_name = sanitize_filename_for_format(final_title, '.docx')
                     elif uploaded_filename:
-                        default_name = uploaded_filename.rsplit('.', 1)[0] + '.docx'
+                        base_name = uploaded_filename.rsplit('.', 1)[0]
+                        default_name = sanitize_filename_for_format(base_name, '.docx')
                     else:
                         default_name = sanitize_filename_for_format(final_title, '.docx')
 
@@ -2349,7 +2705,42 @@ with build_col:
                     st.session_state["generated_html"] = None
                     st.session_state["last_html"] = None
                     st.session_state["generated_xlsx"] = None
+                    st.session_state["generated_pdf"] = None
                     st.success("DOCX built successfully!")
+
+                elif export_format == "PDF":
+                    # Font settings
+                    font_name = DOCUMENT_FONTS.get(docx_font, "Times New Roman")
+                    font_size_val = docx_font_size.replace("pt", "")
+                    toc_depth_val = {"1 level": 1, "2 levels": 2, "3 levels": 3}.get(docx_toc_depth, 2)
+
+                    # Direct MD to PDF conversion
+                    pdf_bytes = convert_markdown_to_pdf(
+                        md_text,
+                        font_name=font_name,
+                        font_size=font_size_val,
+                        include_toc=docx_toc,
+                        toc_depth=toc_depth_val,
+                        highlight_style=docx_highlight
+                    )
+
+                    # Determine default filename
+                    if mode == "mdBook Project":
+                        default_name = sanitize_filename_for_format(final_title, '.pdf')
+                    elif uploaded_filename:
+                        base_name = uploaded_filename.rsplit('.', 1)[0]
+                        default_name = sanitize_filename_for_format(base_name, '.pdf')
+                    else:
+                        default_name = sanitize_filename_for_format(final_title, '.pdf')
+
+                    # Store result in session state
+                    st.session_state["generated_pdf"] = pdf_bytes
+                    st.session_state["generated_pdf_name"] = default_name
+                    st.session_state["generated_html"] = None
+                    st.session_state["last_html"] = None
+                    st.session_state["generated_docx"] = None
+                    st.session_state["generated_xlsx"] = None
+                    st.success("PDF built successfully!")
 
                 elif export_format == "XLSX (Excel)":
                     # Convert markdown tables to XLSX
@@ -2366,7 +2757,8 @@ with build_col:
                     if mode == "mdBook Project":
                         default_name = sanitize_filename_for_format(final_title, '.xlsx')
                     elif uploaded_filename:
-                        default_name = uploaded_filename.rsplit('.', 1)[0] + '.xlsx'
+                        base_name = uploaded_filename.rsplit('.', 1)[0]
+                        default_name = sanitize_filename_for_format(base_name, '.xlsx')
                     else:
                         default_name = sanitize_filename_for_format(final_title, '.xlsx')
 
@@ -2376,6 +2768,7 @@ with build_col:
                     st.session_state["generated_html"] = None
                     st.session_state["last_html"] = None
                     st.session_state["generated_docx"] = None
+                    st.session_state["generated_pdf"] = None
                     st.success("XLSX built successfully!")
 
             except Exception as e:
@@ -2400,6 +2793,15 @@ with build_col:
             use_container_width=True
         )
 
+    if st.session_state.get("generated_pdf"):
+        st.download_button(
+            "Download PDF",
+            data=st.session_state["generated_pdf"],
+            file_name=st.session_state.get("generated_pdf_name", "document.pdf"),
+            mime="application/pdf",
+            use_container_width=True
+        )
+
     if st.session_state.get("generated_xlsx"):
         st.download_button(
             "Download XLSX",
@@ -2415,6 +2817,8 @@ with preview_col:
         st.components.v1.html(st.session_state["last_html"], height=650, scrolling=True)
     elif st.session_state.get("generated_docx"):
         st.info("DOCX preview not available. Download the file to view it.")
+    elif st.session_state.get("generated_pdf"):
+        st.info("PDF preview not available. Download the file to view it.")
     elif st.session_state.get("generated_xlsx"):
         st.info("XLSX preview not available. Download the file to view it in Excel.")
     else:
